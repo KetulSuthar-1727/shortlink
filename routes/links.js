@@ -13,11 +13,16 @@ router.post('/', async(req, res) => {
 
     const rateLimit = await checkRateLimit(key);
 
+    res.set("X-RateLimit-Limit", rateLimit.limit);
+    res.set("X-RateLimit-Remaining", rateLimit.remaining);
+    res.set("X-RateLimit-Reset", rateLimit.resetIn);
+    
     if (!rateLimit.allowed) {
       return res.status(429).json({
         error: "Rate limit exceeded",
         limit: rateLimit.limit,
         count: rateLimit.count,
+        retryAfter: rateLimit.resetIn,
       });
     }
 
