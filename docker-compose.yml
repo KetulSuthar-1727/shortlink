@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: shortlink-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shortlink
+      POSTGRES_PASSWORD: shortlink
+      POSTGRES_DB: shortlink
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortlink -d shortlink"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: shortlink-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: shortlink-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://shortlink:shortlink@postgres:5432/shortlink
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
