@@ -1,6 +1,6 @@
 # ShortLink
 
-A URL shortening service built with **Node.js, Express, PostgreSQL, Redis, and Docker**.
+A distributed URL shortening service built with **Node.js, Express, PostgreSQL, Redis, Docker, and Nginx**.
 
 ## Features
 
@@ -12,8 +12,11 @@ A URL shortening service built with **Node.js, Express, PostgreSQL, Redis, and D
 * Link expiration support
 * Click count tracking
 * Rate-limit information
-* Dockerized Node.js, PostgreSQL, and Redis services
+* Nginx reverse proxy and load balancing
+* Multiple API instances for horizontal scaling
+* Dockerized application infrastructure
 * PostgreSQL database migrations
+* k6 load testing
 
 ## Tech Stack
 
@@ -22,68 +25,176 @@ A URL shortening service built with **Node.js, Express, PostgreSQL, Redis, and D
 * **PostgreSQL**
 * **Redis**
 * **Docker & Docker Compose**
+* **Nginx**
 * **node-pg-migrate**
+* **k6**
 
 ## Architecture
 
 ```text
-Client
-  │
-  ▼
-Node.js / Express
-  │
-  ├──────────► Redis
-  │             ├── Cache
-  │             └── Rate Limiting
-  │
-  └──────────► PostgreSQL
-                └── URL Data
+                         Client
+                           │
+                           ▼
+                        Nginx
+                           │
+                  ┌────────┴────────┐
+                  ▼                 ▼
+               API #1             API #2
+                  │                 │
+                  └────────┬────────┘
+                           │
+                    ┌──────┴──────┐
+                    ▼             ▼
+                  Redis       PostgreSQL
+              Cache + Rate      URL Data
+                 Limiting
 ```
 
-## API
+## Prerequisites
 
-### Create Short URL
+To run the project locally, install:
+
+* **Git**
+* **Docker**
+* **Docker Compose**
+
+Docker Desktop or Docker Engine with Docker Compose is sufficient.
+
+Verify the installation:
+
+```bash
+git --version
+docker --version
+docker compose version
+```
+
+## Getting Started
+
+### 1. Clone the repository
+
+```bash
+git clone <your-github-repository-url>
+cd shortlink
+```
+
+### 2. Configure environment variables
+
+Create your environment file:
+
+```bash
+cp .env.example .env
+```
+
+Update `.env` with the required configuration.
+
+**Do not commit `.env` to Git.**
+
+The environment configuration contains settings for:
+
+* PostgreSQL
+* Redis
+* Application port
+* Other application configuration
+
+### 3. Start the application
+
+Build and start the complete Dockerized application:
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+
+```text
+Nginx
+API #1
+API #2
+PostgreSQL
+Redis
+```
+
+### 4. Check running services
+
+```bash
+docker compose ps
+```
+
+All required containers should show as running.
+
+### 5. Run database migrations
+
+Run migrations from an API container:
+
+```bash
+docker compose exec api1 npm run migrate up
+```
+
+If the database is already up to date, the migration command will report:
+
+```text
+No migrations to run
+```
+
+### 6. Verify the API
+
+Health check:
+
+```bash
+curl http://localhost/health
+```
+
+A successful response confirms that the application is running behind Nginx.
+
+## Using the API
+
+### Create a Short URL
+
+Send a POST request:
 
 ```http
 POST /api/links
-```
-
-Request:
-
-```json
-{
-  "longUrl": "https://github.com"
-}
-```
-
-Response:
-
-```json
-{
-  "shortCode": "1",
-  "shortUrl": "http://localhost:3000/1",
-  "longUrl": "https://github.com"
-}
-```
-
-### Redirect
-
-```http
-GET /:shortCode
+Content-Type: application/json
 ```
 
 Example:
 
-```text
-http://localhost:3000/1
+```bash
+curl -X POST http://localhost/api/links \
+  -H "Content-Type: application/json" \
+  -d '{"longUrl":"https://github.com"}'
 ```
 
-The service looks up the short code and redirects to the original URL.
+Example response:
+
+```json
+{
+  "shortCode": "1",
+  "shortUrl": "http://localhost/1",
+  "longUrl": "https://github.com"
+}
+```
+
+### Open the Short URL
+
+Use the generated short URL:
+
+```text
+http://localhost/1
+```
+
+The application will redirect to the original URL.
 
 ### Health Check
 
 ```http
 GET /health
+```
+
+Example:
+
+```bash
+curl http://localhost/health
 ```
 
 ## Rate Limiting
@@ -96,14 +207,16 @@ The current rate limit is:
 
 The rate limiter uses Redis `INCR` and `TTL` to maintain the request counter and expiration window.
 
+When the limit is exceeded, the API returns a rate-limit response.
+
 ## Caching
 
-Redis uses a cache-aside approach:
+Redis uses a cache-aside approach for URL lookups:
 
 ```text
 Request
    ↓
-Redis
+ Redis
    │
    ├── HIT  → Return cached URL
    │
@@ -114,32 +227,72 @@ Redis
       Redis
 ```
 
-## Docker
+This reduces repeated database queries for frequently accessed short URLs.
 
-The application runs using three Docker services:
+## Horizontal Scaling & Load Balancing
+
+The application runs two Node.js API instances:
 
 ```text
-API
-PostgreSQL
-Redis
+                    Nginx
+                   /     \
+                  ▼       ▼
+               API #1   API #2
 ```
 
-Start the application:
+Nginx distributes incoming requests between the API instances.
+
+Both API instances share the same:
+
+* PostgreSQL database
+* Redis instance
+
+The API containers are not directly exposed to the host. Nginx acts as the public entry point.
+
+## Docker
+
+The complete application runs through Docker Compose.
+
+Start:
 
 ```bash
 docker compose up -d
 ```
 
-Check services:
+Rebuild after code changes:
+
+```bash
+docker compose up -d --build
+```
+
+Check containers:
 
 ```bash
 docker compose ps
 ```
 
-View API logs:
+View API #1 logs:
 
 ```bash
-docker compose logs -f api
+docker compose logs -f api1
+```
+
+View API #2 logs:
+
+```bash
+docker compose logs -f api2
+```
+
+View Nginx logs:
+
+```bash
+docker compose logs -f nginx
+```
+
+View all logs:
+
+```bash
+docker compose logs -f
 ```
 
 Stop the application:
@@ -148,11 +301,51 @@ Stop the application:
 docker compose down
 ```
 
-Run database migrations:
+Stop and remove containers while keeping the PostgreSQL volume:
 
 ```bash
-docker compose exec api npm run migrate up
+docker compose down
 ```
+
+To remove the database volume as well:
+
+```bash
+docker compose down -v
+```
+
+**Warning:** removing the volume deletes the persisted PostgreSQL data.
+
+## Database Migrations
+
+Run:
+
+```bash
+docker compose exec api1 npm run migrate up
+```
+
+Check the migration status/output to confirm that the database schema is up to date.
+
+## Load Testing
+
+The project includes a k6 load test.
+
+Run:
+
+```bash
+k6 run tests/load-test.js
+```
+
+The tested configuration achieved:
+
+```text
+Virtual Users:    50
+Duration:         30 seconds
+Requests:         1,500
+Throughput:       ~49 req/s
+Failed Requests:  0%
+```
+
+The load test verifies that requests successfully pass through Nginx and the API infrastructure.
 
 ## Database
 
@@ -167,22 +360,44 @@ PostgreSQL stores:
 
 PostgreSQL data is persisted using a Docker volume.
 
+## Project Structure
+
+```text
+shortlink/
+├── src/
+├── migrations/
+├── nginx/
+│   └── nginx.conf
+├── tests/
+│   └── load-test.js
+├── Dockerfile
+├── docker-compose.yml
+├── package.json
+├── .env.example
+├── .gitignore
+└── README.md
+```
+
 ## Environment
 
-The application uses environment variables for database, Redis, port, and application configuration.
+The project uses environment variables for application configuration, PostgreSQL, and Redis.
 
-Do not commit the `.env` file to Git.
+The `.env` file is intentionally excluded from Git.
 
-## Local Development
+Use `.env.example` as the template for local configuration.
 
-Start the complete application:
+The complete application stack runs inside Docker, so PostgreSQL and Redis do not need to be installed separately on the host machine.
+
+## Stopping the Project
+
+```bash
+docker compose down
+```
+
+To start it again later:
 
 ```bash
 docker compose up -d
 ```
 
-Then access:
-
-```text
-http://localhost:3000
-```
+The PostgreSQL Docker volume preserves the database data between normal container shutdowns.
